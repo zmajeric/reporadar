@@ -3,3 +3,5 @@ __pycache__
 *.pyc
 pgdata
 .DS_Store
+go-ingest/.env
+go-ingest/config.yaml

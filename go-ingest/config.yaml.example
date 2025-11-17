@@ -1,0 +1,4 @@
+DatabaseUrl: postgres://zmajeric:l0c4l@localhost:5432/rr?sslmode=disable
+HttpPort: 8080
+EmbedderUrl: localhost:8001
+EmbedderReqTimeout: 5
