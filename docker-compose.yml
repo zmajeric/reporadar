@@ -1,0 +1,18 @@
+
+version: "3.9"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: reporadar-pg
+    environment:
+      POSTGRES_USER: zmajeric
+      POSTGRES_PASSWORD: l0c4l
+      POSTGRES_DB: rr
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
