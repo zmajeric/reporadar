@@ -20,3 +20,5 @@ CREATE INDEX IF NOT EXISTS idx_issues_created ON issues(created_at);
 CREATE INDEX IF NOT EXISTS idx_issues_embedding
   ON issues USING ivfflat (embedding vector_cosine_ops)
   WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_issues_repo_embedding
+ON issues (repo, embedding);
