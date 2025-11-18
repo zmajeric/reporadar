@@ -1,15 +1,19 @@
 package api_server
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/zanmajeric/reporadar-go-ingest/embedder"
+	"github.com/zanmajeric/reporadar-go-ingest/utils"
 )
 
 type Issue struct {
@@ -26,10 +30,10 @@ type Server struct {
 	http     http.Server
 	router   *http.ServeMux
 	db       *pgxpool.Pool
-	embedder embedder.Client
+	embedder *embedder.Client
 }
 
-func NewServer(port int, db *pgxpool.Pool, embedder embedder.Client) *Server {
+func NewServer(port int, db *pgxpool.Pool, embedder *embedder.Client) *Server {
 	s := Server{
 		db:       db,
 		router:   http.NewServeMux(),
@@ -55,7 +59,7 @@ func (s *Server) routes() {
 	s.router.HandleFunc("GET /repos", s.handleRepo)
 	s.router.HandleFunc("POST /repos/{repo}/ingest", s.handleIngest)
 	s.router.HandleFunc("GET /issues", s.handleIssues)
-	//s.Mux.HandleFunc("GET /search", s.handleSearch)
+	s.router.HandleFunc("GET /search", s.handleSearch)
 	// TODO: add /repos, /repos/{id}/ingest, /issues, /search, /issues/{id}/duplicates
 }
 
@@ -162,7 +166,22 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 
 }
 
+type searchResult struct {
+	ID         string  `json:"id"`
+	Repo       string  `json:"repo"`
+	Title      string  `json:"title"`
+	Body       string  `json:"body"`
+	Similarity float64 `json:"similarity"`
+}
+
+type searchResponse struct {
+	Results []searchResult `json:"results"`
+	Message string         `json:"message"`
+}
+
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	repo := r.URL.Query().Get("repo")
 	if repo == "" {
 		http.Error(w, "repo is required", http.StatusBadRequest)
@@ -174,5 +193,89 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "searchQuery is required", http.StatusBadRequest)
 		return
 	}
+
+	limit := 10
+	if ls := r.URL.Query().Get("limit"); ls != "" {
+		if l, err := strconv.Atoi(ls); err == nil {
+			limit = l
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Second*10)
+	defer cancel()
+
+	embedderStartTime := time.Now()
+	emb, err := s.embedder.Embed(ctx, searchQuery)
+	if err != nil {
+		http.Error(w, "embed call error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	embederReqTime := time.Since(embedderStartTime)
+
+	vectorLiteral := utils.EmbeddingToVectorLiteral(emb)
+
+	const qSQL = `
+		SELECT id, repo, title, body, embedding <-> $1::vector AS distance
+		FROM issues
+		WHERE repo = $2
+		ORDER BY embedding <-> $1::vector
+		LIMIT $3;
+	`
+
+	sqlStartTime := time.Now()
+	rows, err := s.db.Query(ctx, qSQL, vectorLiteral, repo, limit)
+	if err != nil {
+		http.Error(w, "search query failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sqlProcTime := time.Since(sqlStartTime)
+
+	defer rows.Close()
+
+	var searchResults []searchResult
+	const minSim = 0.48
+	for rows.Next() {
+		var (
+			id       string
+			repoVal  string
+			title    sql.NullString
+			body     sql.NullString
+			distance float64
+		)
+
+		if err := rows.Scan(&id, &repoVal, &title, &body, &distance); err != nil {
+			http.Error(w, "search scan failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// crude similarity: 1 / (1 + distance)
+		sim := 1.0 / (1.0 + distance)
+		log.Printf("q=%q title=%q distance=%.4f sim=%.4f", searchQuery, title.String, distance, sim)
+		if sim >= minSim {
+			searchResults = append(searchResults, searchResult{
+				ID:         id,
+				Repo:       repoVal,
+				Title:      title.String,
+				Body:       body.String,
+				Similarity: sim,
+			})
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, "search rows error: "+err.Error(), http.StatusInternalServerError)
+	}
+
+	searchRsp := searchResponse{Results: searchResults}
+	if len(searchResults) == 0 {
+		searchRsp.Message = "no sufficiently similar issues found"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(searchRsp) // added respMsg
+
+	reqTime := time.Since(start)
+	log.Printf("/search request time: %v | embedding time: %v | sql time: %v", reqTime, embederReqTime, sqlProcTime)
 
 }

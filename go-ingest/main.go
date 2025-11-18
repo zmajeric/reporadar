@@ -42,7 +42,7 @@ func main() {
 	}
 	log.Println("Connected to Postgres")
 
-	s := api_server.NewServer(configuration.HttpPort, pool, *embedderClient)
+	s := api_server.NewServer(configuration.HttpPort, pool, embedderClient)
 	log.Printf("Go ingest service listening on :%d", configuration.HttpPort)
 	s.Run()
 }
