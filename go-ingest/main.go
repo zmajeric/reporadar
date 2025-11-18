@@ -4,11 +4,9 @@ import (
 	"context"
 	"flag"
 	"log"
-	"os"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
 	"github.com/zanmajeric/reporadar-go-ingest/api_server"
 	"github.com/zanmajeric/reporadar-go-ingest/config"
 	"github.com/zanmajeric/reporadar-go-ingest/embedder"
@@ -19,19 +17,12 @@ func main() {
 	configFiles := flag.String("configFiles", "config.yaml", "Comma separated list of config files to load")
 	flag.Parse()
 
-	configuration := config.LoadConfig(strings.Split(*configFiles, ","))
+	cfg := config.LoadConfig(strings.Split(*configFiles, ","))
 
-	embedderClient := embedder.NewClient(configuration.EmbedderUrl)
-
-	_ = godotenv.Load()
-
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		log.Fatal("DATABASE_URL is not set")
-	}
+	embedderClient := embedder.NewClient(cfg.EmbedderUrl)
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dbURL)
+	pool, err := pgxpool.New(ctx, cfg.DatabaseUrl)
 	if err != nil {
 		log.Fatalf("failed to connect to db: %v", err)
 	}
@@ -42,7 +33,7 @@ func main() {
 	}
 	log.Println("Connected to Postgres")
 
-	s := api_server.NewServer(configuration.HttpPort, pool, embedderClient)
-	log.Printf("Go ingest service listening on :%d", configuration.HttpPort)
+	s := api_server.NewServer(cfg.HttpPort, pool, embedderClient)
+	log.Printf("Go ingest service listening on :%d", cfg.HttpPort)
 	s.Run()
 }

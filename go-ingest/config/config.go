@@ -15,10 +15,10 @@ import (
 )
 
 type AppConfig struct {
-	HttpPort           int           `yaml:"HttpPort" default:"8080"`
-	DatabaseUrl        string        `json:"DatabaseUrl"`
-	EmbedderUrl        string        `json:"EmbedderUrl"`
-	EmbedderReqTimeout time.Duration `json:"EmbedderReqTimeout"`
+	HttpPort           int           `yaml:"HttpPort"`
+	DatabaseUrl        string        `yaml:"DatabaseUrl"`
+	EmbedderUrl        string        `yaml:"EmbedderUrl"`
+	EmbedderReqTimeout time.Duration `yaml:"EmbedderReqTimeout"`
 }
 
 func LoadConfig(configFiles []string) *AppConfig {

@@ -36,8 +36,7 @@ func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
 		return nil, fmt.Errorf("failed to marshal embedRequest: %w", err)
 	}
 
-	//req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/embed", bytes.NewReader(body)) // TODO: unsupported protocol scheme => fix the baseUrl
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost:8001/embed", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/embed", bytes.NewReader(body)) // TODO: unsupported protocol scheme => fix the baseUrl
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
