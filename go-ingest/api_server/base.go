@@ -166,19 +166,30 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 
 }
 
+type Confidence string
+
+const (
+	ConfidenceStrong Confidence = "strong"
+	ConfidenceWeak   Confidence = "weak"
+)
+
 type searchResult struct {
-	ID         string  `json:"id"`
-	Repo       string  `json:"repo"`
-	Title      string  `json:"title"`
-	Body       string  `json:"body"`
-	Similarity float64 `json:"similarity"`
+	ID         string     `json:"id"`
+	Repo       string     `json:"repo"`
+	Title      string     `json:"title"`
+	Body       string     `json:"body"`
+	Similarity float64    `json:"similarity"`
+	Confidence Confidence `json:"confidence"`
 }
 
 type searchResponse struct {
-	Results []searchResult `json:"results"`
-	Message string         `json:"message"`
+	Results      []searchResult `json:"results"`
+	Message      string         `json:"message"`
+	StrongSimThr float64        `json:"strong_sim_thr"`
+	WeakSimThr   float64        `json:"weak_sim_thr"`
 }
 
+// TODO: move logic to service layer
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
@@ -190,13 +201,13 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	searchQuery := r.URL.Query().Get("q")
 	if searchQuery == "" {
-		http.Error(w, "searchQuery is required", http.StatusBadRequest)
+		http.Error(w, "q is required", http.StatusBadRequest)
 		return
 	}
 
 	limit := 10
 	if ls := r.URL.Query().Get("limit"); ls != "" {
-		if l, err := strconv.Atoi(ls); err == nil {
+		if l, err := strconv.Atoi(ls); err == nil && l > 0 && l <= 20 {
 			limit = l
 		}
 	}
@@ -210,15 +221,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "embed call error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	embederReqTime := time.Since(embedderStartTime)
+	embedderReqTime := time.Since(embedderStartTime)
 
 	vectorLiteral := utils.EmbeddingToVectorLiteral(emb)
 
 	const qSQL = `
-		SELECT id, repo, title, body, embedding <-> $1::vector AS distance
+		SELECT id, repo, title, body, embedding <=> $1::vector AS distance
 		FROM issues
 		WHERE repo = $2
-		ORDER BY embedding <-> $1::vector
+		ORDER BY embedding <=> $1::vector
 		LIMIT $3;
 	`
 
@@ -232,8 +243,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	defer rows.Close()
 
-	var searchResults []searchResult
-	const minSim = 0.48
+	var strongMatches []searchResult
+	var weakMatches []searchResult
+	const strongSim = 0.5
+	const weakSim = 0.3
 	for rows.Next() {
 		var (
 			id       string
@@ -248,26 +261,51 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// crude similarity: 1 / (1 + distance)
-		sim := 1.0 / (1.0 + distance)
-		log.Printf("q=%q title=%q distance=%.4f sim=%.4f", searchQuery, title.String, distance, sim)
-		if sim >= minSim {
-			searchResults = append(searchResults, searchResult{
-				ID:         id,
-				Repo:       repoVal,
-				Title:      title.String,
-				Body:       body.String,
-				Similarity: sim,
-			})
+		// cosine similarity in [-1, 1] from cosine distance
+		sim := 1.0 - distance
+		res := searchResult{
+			ID:         id,
+			Repo:       repoVal,
+			Title:      title.String,
+			Body:       body.String,
+			Similarity: sim,
+		}
+		if sim >= strongSim {
+			res.Confidence = ConfidenceStrong
+			strongMatches = append(strongMatches, res)
+		} else if sim >= weakSim {
+			res.Confidence = ConfidenceWeak
+			weakMatches = append(weakMatches, res)
+		} else {
+			log.Printf(
+				"filtered-out q=%q title=%q sim=%.4f (strong>=%.2f, weak>=%.2f)",
+				searchQuery, title.String, sim, strongSim, weakSim,
+			)
 		}
 	}
 
 	if err := rows.Err(); err != nil {
 		http.Error(w, "search rows error: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	searchRsp := searchResponse{Results: searchResults}
-	if len(searchResults) == 0 {
+	var results []searchResult
+	switch {
+	case len(strongMatches) > 0 && len(strongMatches) < limit:
+		results = append(results, strongMatches...)
+		remaining := limit - len(strongMatches)
+		if remaining > len(weakMatches) {
+			remaining = len(weakMatches)
+		}
+		results = append(results, weakMatches[:remaining]...)
+	case len(strongMatches) > 0:
+		results = strongMatches
+	case len(weakMatches) > 0:
+		results = weakMatches
+	}
+
+	searchRsp := searchResponse{Results: results, StrongSimThr: strongSim, WeakSimThr: weakSim}
+	if len(results) == 0 {
 		searchRsp.Message = "no sufficiently similar issues found"
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -276,6 +314,6 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	_ = enc.Encode(searchRsp) // added respMsg
 
 	reqTime := time.Since(start)
-	log.Printf("/search request time: %v | embedding time: %v | sql time: %v", reqTime, embederReqTime, sqlProcTime)
+	log.Printf("[/search] request time: %v | embedding time: %v | sql time: %v \n ------", reqTime, embedderReqTime, sqlProcTime)
 
 }
