@@ -5,4 +5,4 @@ pgdata
 .DS_Store
 go-ingest/.env
 go-ingest/config.yaml
-./idea
+.idea
