@@ -10,16 +10,14 @@ import (
 	"github.com/zanmajeric/reporadar-go-ingest/api_server"
 	"github.com/zanmajeric/reporadar-go-ingest/config"
 	"github.com/zanmajeric/reporadar-go-ingest/embedder"
+	"github.com/zanmajeric/reporadar-go-ingest/internal/search"
 )
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	configFiles := flag.String("configFiles", "config.yaml", "Comma separated list of config files to load")
 	flag.Parse()
-
 	cfg := config.LoadConfig(strings.Split(*configFiles, ","))
-
-	embedderClient := embedder.NewClient(cfg.EmbedderUrl)
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, cfg.DatabaseUrl)
@@ -33,7 +31,10 @@ func main() {
 	}
 	log.Println("Connected to Postgres")
 
-	s := api_server.NewServer(cfg.HttpPort, pool, embedderClient)
+	embedderClient := embedder.NewClient(cfg.EmbedderUrl)
+	issueRep := search.NewPgRepository(pool)
+	searchSrv := search.New(ctx, embedderClient, issueRep, *cfg)
+	s := api_server.NewServer(cfg, pool, searchSrv)
 	log.Printf("Go ingest service listening on :%d", cfg.HttpPort)
 	s.Run()
 }

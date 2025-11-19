@@ -2,7 +2,6 @@ package api_server
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,36 +11,28 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/zanmajeric/reporadar-go-ingest/embedder"
-	"github.com/zanmajeric/reporadar-go-ingest/utils"
+	"github.com/zanmajeric/reporadar-go-ingest/config"
+	"github.com/zanmajeric/reporadar-go-ingest/internal/search"
 )
 
-type Issue struct {
-	ID        string    `json:"id"`
-	Repo      string    `json:"repo"`
-	Title     string    `json:"title"`
-	Body      string    `json:"body"`
-	Labels    []string  `json:"labels"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt string    `json:"updated_at"`
-}
-
 type Server struct {
-	http     http.Server
-	router   *http.ServeMux
-	db       *pgxpool.Pool
-	embedder *embedder.Client
+	http      http.Server
+	router    *http.ServeMux
+	db        *pgxpool.Pool
+	searchSrv *search.Service
+	cfg       *config.AppConfig
 }
 
-func NewServer(port int, db *pgxpool.Pool, embedder *embedder.Client) *Server {
+func NewServer(cfg *config.AppConfig, db *pgxpool.Pool, searchSrv *search.Service) *Server {
 	s := Server{
-		db:       db,
-		router:   http.NewServeMux(),
-		embedder: embedder,
+		db:        db,
+		router:    http.NewServeMux(),
+		searchSrv: searchSrv,
+		cfg:       cfg,
 	}
 	s.routes()
 	s.http = http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
+		Addr:    fmt.Sprintf(":%d", cfg.HttpPort),
 		Handler: s.router,
 	}
 	return &s
@@ -54,9 +45,16 @@ func (s *Server) Run() {
 	}
 }
 
+func (s *Server) Close(ctx context.Context) {
+	err := s.http.Shutdown(ctx)
+	if err != nil {
+		log.Fatalf("Error shutting down http server: %s", err)
+	}
+}
+
 func (s *Server) routes() {
 	s.router.HandleFunc("GET /health", s.handleHealth)
-	s.router.HandleFunc("GET /repos", s.handleRepo)
+	s.router.HandleFunc("POST /repos", s.handleRepo)
 	s.router.HandleFunc("POST /repos/{repo}/ingest", s.handleIngest)
 	s.router.HandleFunc("GET /issues", s.handleIssues)
 	s.router.HandleFunc("GET /search", s.handleSearch)
@@ -78,10 +76,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRepo(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusBadRequest)
-	}
-
 	type Req struct {
 		Repo string `json:"repo"`
 	}
@@ -89,9 +83,11 @@ func (s *Server) handleRepo(w http.ResponseWriter, r *http.Request) {
 	var req Req
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "json error: "+err.Error(), http.StatusBadRequest)
+		return
 	}
 	if req.Repo == "" {
 		http.Error(w, "repo required", http.StatusBadRequest)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok","repo":"` + req.Repo + `"}`))
@@ -110,12 +106,12 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b, err := os.ReadFile("../data/mock_issues.json")
+	b, err := os.ReadFile("/Users/zmajeric/development/reporadar/data/mock_issues.json")
 	if err != nil {
 		http.Error(w, "mock file not found: "+err.Error(), http.StatusBadRequest)
 	}
 
-	var issues []Issue
+	var issues []search.IssueRow
 	if err := json.Unmarshal(b, &issues); err != nil {
 		http.Error(w, "invalid json structure: "+err.Error(), http.StatusBadRequest)
 	}
@@ -125,13 +121,15 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	for _, iss := range issues {
 		_, err := s.db.Exec(ctx,
-			`INSERT INTO issues (id, repo, title, body, labels, created_at, updated_at)
+			`
+			INSERT INTO issues (id, repo, title, body, labels, created_at, updated_at)
 	        VALUES ($1,$2,$3,$4,$5,$6,$7)
-	        ON CONFLICT (id) DO NOTHING`,
+	        ON CONFLICT (id) DO NOTHING
+	        `,
 			iss.ID, iss.Repo, iss.Title, iss.Body, iss.Labels, iss.CreatedAt, iss.UpdatedAt,
 		)
 		if err != nil {
-			http.Error(w, "Db error: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, "db error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
@@ -151,9 +149,9 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var out []Issue
+	var out []search.IssueRow
 	for rows.Next() {
-		var iss Issue
+		var iss search.IssueRow
 		if err := rows.Scan(&iss.ID, &iss.Title, &iss.Body, &iss.Labels, &iss.CreatedAt); err != nil {
 			http.Error(w, "Db error: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -166,30 +164,6 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 
 }
 
-type Confidence string
-
-const (
-	ConfidenceStrong Confidence = "strong"
-	ConfidenceWeak   Confidence = "weak"
-)
-
-type searchResult struct {
-	ID         string     `json:"id"`
-	Repo       string     `json:"repo"`
-	Title      string     `json:"title"`
-	Body       string     `json:"body"`
-	Similarity float64    `json:"similarity"`
-	Confidence Confidence `json:"confidence"`
-}
-
-type searchResponse struct {
-	Results      []searchResult `json:"results"`
-	Message      string         `json:"message"`
-	StrongSimThr float64        `json:"strong_sim_thr"`
-	WeakSimThr   float64        `json:"weak_sim_thr"`
-}
-
-// TODO: move logic to service layer
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
@@ -215,105 +189,27 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Second*10)
 	defer cancel()
 
-	embedderStartTime := time.Now()
-	emb, err := s.embedder.Embed(ctx, searchQuery)
+	res, err := s.searchSrv.Search(ctx, repo, searchQuery, limit)
 	if err != nil {
-		http.Error(w, "embed call error: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	embedderReqTime := time.Since(embedderStartTime)
-
-	vectorLiteral := utils.EmbeddingToVectorLiteral(emb)
-
-	const qSQL = `
-		SELECT id, repo, title, body, embedding <=> $1::vector AS distance
-		FROM issues
-		WHERE repo = $2
-		ORDER BY embedding <=> $1::vector
-		LIMIT $3;
-	`
-
-	sqlStartTime := time.Now()
-	rows, err := s.db.Query(ctx, qSQL, vectorLiteral, repo, limit)
-	if err != nil {
-		http.Error(w, "search query failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	sqlProcTime := time.Since(sqlStartTime)
-
-	defer rows.Close()
-
-	var strongMatches []searchResult
-	var weakMatches []searchResult
-	const strongSim = 0.5
-	const weakSim = 0.3
-	for rows.Next() {
-		var (
-			id       string
-			repoVal  string
-			title    sql.NullString
-			body     sql.NullString
-			distance float64
-		)
-
-		if err := rows.Scan(&id, &repoVal, &title, &body, &distance); err != nil {
-			http.Error(w, "search scan failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// cosine similarity in [-1, 1] from cosine distance
-		sim := 1.0 - distance
-		res := searchResult{
-			ID:         id,
-			Repo:       repoVal,
-			Title:      title.String,
-			Body:       body.String,
-			Similarity: sim,
-		}
-		if sim >= strongSim {
-			res.Confidence = ConfidenceStrong
-			strongMatches = append(strongMatches, res)
-		} else if sim >= weakSim {
-			res.Confidence = ConfidenceWeak
-			weakMatches = append(weakMatches, res)
-		} else {
-			log.Printf(
-				"filtered-out q=%q title=%q sim=%.4f (strong>=%.2f, weak>=%.2f)",
-				searchQuery, title.String, sim, strongSim, weakSim,
-			)
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		http.Error(w, "search rows error: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	var results []searchResult
-	switch {
-	case len(strongMatches) > 0 && len(strongMatches) < limit:
-		results = append(results, strongMatches...)
-		remaining := limit - len(strongMatches)
-		if remaining > len(weakMatches) {
-			remaining = len(weakMatches)
-		}
-		results = append(results, weakMatches[:remaining]...)
-	case len(strongMatches) > 0:
-		results = strongMatches
-	case len(weakMatches) > 0:
-		results = weakMatches
-	}
-
-	searchRsp := searchResponse{Results: results, StrongSimThr: strongSim, WeakSimThr: weakSim}
-	if len(results) == 0 {
-		searchRsp.Message = "no sufficiently similar issues found"
-	}
 	w.Header().Set("Content-Type", "application/json")
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(searchRsp) // added respMsg
+	err = json.NewEncoder(w).Encode(struct {
+		Results      []search.Result `json:"results"`
+		StrongSimThr float64         `json:"strong_sim_thr"`
+		WeakSimThr   float64         `json:"weak_sim_thr"`
+	}{
+		Results:      res,
+		StrongSimThr: s.cfg.StrongSimThr,
+		WeakSimThr:   s.cfg.WeakSimThr,
+	})
+	if err != nil {
+		http.Error(w, "failed serializing response: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	reqTime := time.Since(start)
-	log.Printf("[/search] request time: %v | embedding time: %v | sql time: %v \n ------", reqTime, embedderReqTime, sqlProcTime)
-
+	log.Printf("[/search] request time: %v", reqTime)
 }

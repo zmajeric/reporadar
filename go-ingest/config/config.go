@@ -19,6 +19,8 @@ type AppConfig struct {
 	DatabaseUrl        string        `yaml:"DatabaseUrl"`
 	EmbedderUrl        string        `yaml:"EmbedderUrl"`
 	EmbedderReqTimeout time.Duration `yaml:"EmbedderReqTimeout"`
+	StrongSimThr       float64       `yaml:"StrongSimThr"`
+	WeakSimThr         float64       `yaml:"WeakSimThr"`
 }
 
 func LoadConfig(configFiles []string) *AppConfig {
