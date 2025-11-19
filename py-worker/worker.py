@@ -1,9 +1,8 @@
 import os
 from typing import List
 
-import numpy as np
 import psycopg2
-from psycopg2.extras import register_default_json, Json
+from psycopg2.extras import register_default_json
 from sentence_transformers import SentenceTransformer
 from textblob import TextBlob
 
@@ -54,7 +53,7 @@ def fetch_issues_without_embeddings(conn):
         return cur.fetchall()
 
 
-def update_issue_embedding(conn, issue_id: str, embedding: np.ndarray, keywords):
+def update_issue_embedding(conn, issue_id: str, embedding: list[float], keywords):
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -63,10 +62,17 @@ def update_issue_embedding(conn, issue_id: str, embedding: np.ndarray, keywords)
                 keywords = %s
             WHERE id = %s;
             """,
-            (embedding.tolist(), keywords, issue_id),
+            (embedding, keywords, issue_id),
         )
     conn.commit()
 
+def compute_embedding(text: str, model: SentenceTransformer) -> list[float]:
+    emb = model.encode(
+        text,
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+    )
+    return emb.tolist()
 
 def main():
     print("Connecting to Postgres...")
@@ -80,10 +86,10 @@ def main():
 
     for issue_id, title, body, repo in issues:
         text = f"{title}\n\n{body}"
-        emb = model.encode([text])[0]  # shape (384,)
+        computed_embedding = compute_embedding(text, model)
         keywords = extract_keywords(text)
         print(f"Updating issue {issue_id} ({repo}) with {len(keywords)} keywords")
-        update_issue_embedding(conn, issue_id, emb, keywords)
+        update_issue_embedding(conn, issue_id, computed_embedding, keywords)
 
     conn.close()
     print("Done.")

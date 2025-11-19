@@ -1,13 +1,12 @@
 import os
 from typing import List
 
-import numpy as np
 import psycopg2
+import worker
 from fastapi import FastAPI
+from psycopg2.extras import register_default_json
 from pydantic import BaseModel
-from psycopg2.extras import register_default_json, Json
 from sentence_transformers import SentenceTransformer
-from textblob import TextBlob
 
 register_default_json(loads=lambda x: x)
 
@@ -64,5 +63,5 @@ def health():
 def embed(req: EmbedRequest):
     if not req.text.strip():
         return EmbedResponse(embedding=[])
-    emb = model.encode([req.text])[0]  # type: ignore
-    return EmbedResponse(embedding=emb.tolist())
+    emb = worker.compute_embedding(req.text, model)
+    return EmbedResponse(embedding=emb)
