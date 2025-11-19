@@ -63,7 +63,7 @@ def update_issue_embedding(conn, issue_id: str, embedding: np.ndarray, keywords)
                 keywords = %s
             WHERE id = %s;
             """,
-            (embedding.tolist(), Json(keywords), issue_id),
+            (embedding.tolist(), keywords, issue_id),
         )
     conn.commit()
 
