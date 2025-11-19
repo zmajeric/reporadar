@@ -189,22 +189,27 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Second*10)
 	defer cancel()
 
-	res, err := s.searchSrv.Search(ctx, repo, searchQuery, limit)
+	found, err := s.searchSrv.Search(ctx, repo, searchQuery, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(struct {
+	resp := struct {
 		Results      []search.Result `json:"results"`
+		Message      string          `json:"message"`
 		StrongSimThr float64         `json:"strong_sim_thr"`
 		WeakSimThr   float64         `json:"weak_sim_thr"`
 	}{
-		Results:      res,
+		Results:      found,
 		StrongSimThr: s.cfg.StrongSimThr,
 		WeakSimThr:   s.cfg.WeakSimThr,
-	})
+	}
+	if len(found) == 0 {
+		resp.Message = "no sufficiently similar issues found"
+	}
+	err = json.NewEncoder(w).Encode(resp)
 	if err != nil {
 		http.Error(w, "failed serializing response: "+err.Error(), http.StatusInternalServerError)
 		return

@@ -1,9 +1,5 @@
 package search
 
-import (
-	"github.com/zanmajeric/reporadar-go-ingest/config"
-)
-
 type Confidence string
 
 const (
@@ -20,7 +16,7 @@ type Result struct {
 	Confidence Confidence `json:"confidence"`
 }
 
-func ScoreAndRank(issues []IssueRow, cfg config.AppConfig) []Result {
+func ScoreAndRank(issues []IssueRow, limit int, thresholds Thresholds) []Result {
 	var strong []Result
 	var weak []Result
 	for _, issue := range issues {
@@ -33,15 +29,32 @@ func ScoreAndRank(issues []IssueRow, cfg config.AppConfig) []Result {
 			Body:       issue.Body,
 			Similarity: sim,
 		}
-		if sim >= cfg.StrongSimThr {
+		switch {
+		case sim >= thresholds.Strong:
 			res.Confidence = ConfidenceStrong
 			strong = append(strong, res)
-		} else if sim >= cfg.WeakSimThr {
+		case sim >= thresholds.Weak:
 			res.Confidence = ConfidenceWeak
 			weak = append(weak, res)
 		}
 	}
-	out := append([]Result{}, strong...)
-	out = append(out, weak...)
+
+	out := make([]Result, 0, len(issues))
+	for _, res := range strong {
+		if len(out) >= limit {
+			return out
+		}
+		out = append(out, res)
+	}
+	for _, res := range weak {
+		if len(out) >= limit {
+			return out
+		}
+		out = append(out, res)
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+
 	return out
 }

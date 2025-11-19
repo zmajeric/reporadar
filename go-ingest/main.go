@@ -33,7 +33,7 @@ func main() {
 
 	embedderClient := embedder.NewClient(cfg.EmbedderUrl)
 	issueRep := search.NewPgRepository(pool)
-	searchSrv := search.New(ctx, embedderClient, issueRep, *cfg)
+	searchSrv := search.New(embedderClient, issueRep, *cfg)
 	s := api_server.NewServer(cfg, pool, searchSrv)
 	log.Printf("Go ingest service listening on :%d", cfg.HttpPort)
 	s.Run()

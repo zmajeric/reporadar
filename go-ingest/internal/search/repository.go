@@ -17,7 +17,7 @@ func NewPgRepository(db *pgxpool.Pool) *PgRepository {
 	return &PgRepository{db: db}
 }
 
-func (pgr *PgRepository) SearchByVector(ctx context.Context, repo, query string, vector []float32, limit int) ([]IssueRow, error) {
+func (pgr *PgRepository) SearchByVector(ctx context.Context, repo string, vector []float32, limit int) ([]IssueRow, error) {
 	vectorLiteral := utils.EmbeddingToVectorLiteral(vector)
 
 	const qSQL = `

@@ -2,7 +2,8 @@ package search
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"log"
 	"time"
 
 	"github.com/zanmajeric/reporadar-go-ingest/config"
@@ -13,7 +14,7 @@ type Embedder interface {
 }
 
 type IssueRepository interface {
-	SearchByVector(ctx context.Context, repo, query string, vector []float32, limit int) ([]IssueRow, error)
+	SearchByVector(ctx context.Context, repo string, vector []float32, limit int) ([]IssueRow, error)
 }
 
 type IssueRow struct {
@@ -30,15 +31,18 @@ type IssueRow struct {
 type Service struct {
 	embedder Embedder
 	repo     IssueRepository
-	ctx      context.Context
 	cfg      *config.AppConfig
 }
 
-func New(ctx context.Context, embedder Embedder, issuesRep IssueRepository, cfg config.AppConfig) *Service {
+type Thresholds struct {
+	Strong float64
+	Weak   float64
+}
+
+func New(embedder Embedder, issuesRep IssueRepository, cfg config.AppConfig) *Service {
 	return &Service{
 		embedder: embedder,
 		repo:     issuesRep,
-		ctx:      ctx,
 		cfg:      &cfg,
 	}
 }
@@ -46,13 +50,18 @@ func New(ctx context.Context, embedder Embedder, issuesRep IssueRepository, cfg 
 func (s *Service) Search(ctx context.Context, repo, query string, limit int) ([]Result, error) {
 	emb, err := s.embedder.Embed(ctx, query)
 	if err != nil {
-		return nil, errors.New("embedding failed")
+		return nil, fmt.Errorf("embedding failed: %w", err)
 	}
 
-	issues, err := s.repo.SearchByVector(s.ctx, repo, query, emb, limit)
+	issues, err := s.repo.SearchByVector(ctx, repo, emb, limit)
 	if err != nil {
-		return nil, errors.New("search failed")
+		return nil, fmt.Errorf("search failed: %w", err)
 	}
+	log.Printf("[search] repo=%s q=%q rows=%d", repo, query, len(issues))
 
-	return ScoreAndRank(issues, *s.cfg), nil
+	thresholds := Thresholds{
+		Strong: s.cfg.StrongSimThr,
+		Weak:   s.cfg.WeakSimThr,
+	}
+	return ScoreAndRank(issues, limit, thresholds), nil
 }
