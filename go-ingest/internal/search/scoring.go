@@ -1,5 +1,7 @@
 package search
 
+import "log"
+
 type Confidence string
 
 const (
@@ -16,12 +18,12 @@ type Result struct {
 	Confidence Confidence `json:"confidence"`
 }
 
+// ScoreAndRank For normalized vectors, distance = -dot(u, v), so we define similarity = -distance ∈ [-1, 1].
 func ScoreAndRank(issues []IssueRow, limit int, thresholds Thresholds) []Result {
 	var strong []Result
 	var weak []Result
 	for _, issue := range issues {
-		// cosine similarity in [-1, 1] from cosine distance
-		sim := 1.0 - issue.Distance
+		sim := -issue.Distance
 		res := Result{
 			ID:         issue.ID,
 			Repo:       issue.Repo,
@@ -29,6 +31,7 @@ func ScoreAndRank(issues []IssueRow, limit int, thresholds Thresholds) []Result 
 			Body:       issue.Body,
 			Similarity: sim,
 		}
+		log.Printf("issue: [ %v ] \n distance: %v | similarity: %v", res.Title, issue.Distance, res.Similarity)
 		switch {
 		case sim >= thresholds.Strong:
 			res.Confidence = ConfidenceStrong

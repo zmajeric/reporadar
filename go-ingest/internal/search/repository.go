@@ -17,14 +17,15 @@ func NewPgRepository(db *pgxpool.Pool) *PgRepository {
 	return &PgRepository{db: db}
 }
 
+// SearchByVector NOTE: embeddings are L2-normalized and we use pgvector `<=>` (inner product distance).
 func (pgr *PgRepository) SearchByVector(ctx context.Context, repo string, vector []float32, limit int) ([]IssueRow, error) {
 	vectorLiteral := utils.EmbeddingToVectorLiteral(vector)
 
 	const qSQL = `
-		SELECT id, repo, title, body, embedding <=> $1::vector AS distance
+		SELECT id, repo, title, body, embedding <#> $1::vector AS distance
 		FROM issues
 		WHERE repo = $2
-		ORDER BY embedding <=> $1::vector
+		ORDER BY embedding <#> $1::vector
 		LIMIT $3;
 	`
 
